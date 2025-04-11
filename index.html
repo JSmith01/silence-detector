@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Silence Detector</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        #status {
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        #waveform {
+            width: 100%;
+            height: 200px;
+            background-color: #f0f0f0;
+            margin: 20px 0;
+            position: relative;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+        .audio-settings {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+        }
+        .audio-settings label {
+            display: block;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Silence Detector</h1>
+    
+    <div class="audio-settings">
+        <h3>Audio Settings</h3>
+        <label>
+            <input type="checkbox" id="noiseSuppression" checked>
+            Noise Suppression
+        </label>
+    </div>
+
+    <div class="controls">
+        <button id="startBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+    
+    <div id="status">Status: Ready</div>
+    <div id="waveform"></div>
+
+    <script src="main.js"></script>
+</body>
+</html> 
