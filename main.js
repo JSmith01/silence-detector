@@ -8,22 +8,29 @@ let pcmCaptureProcessor;
 let currentAudioBlob = null;
 let mediaStream;
 
+function min(array) {
+    let m = array[0];
+    for (let i = 1; i < array.length; i++) {
+        if (array[i] < m) m = array[i];
+    }
+
+    return m;
+}
+
+function max(array) {
+    let m = array[0];
+    for (let i = 1; i < array.length; i++) {
+        if (array[i] > m) m = array[i];
+    }
+
+    return m;
+}
+
 // DOM Elements
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const statusDiv = document.getElementById('status');
 const waveform = document.getElementById('waveform');
-
-// Create threshold control
-/*const thresholdControl = document.createElement('div');
-thresholdControl.innerHTML = `
-    <div style="margin: 10px 0;">
-        <label for="threshold">Silence Threshold:</label>
-        <input type="range" id="threshold" min="0.00001" max="0.01" step="0.00001" value="0.0001">
-        <span id="thresholdValue">0.0001</span>
-    </div>
-`;
-waveform.parentNode.insertBefore(thresholdControl, waveform);*/
 
 // Create download button container
 const downloadContainer = document.createElement('div');
@@ -226,25 +233,24 @@ startBtn.addEventListener('click', async () => {
         analyser.fftSize = 2048;
         
         // Create processors
-        silenceDetector = new AudioWorkletNode(audioContext, 'silence-detector'/*, {
-            parameterData: {
-                threshold: parseFloat(document.getElementById('threshold').value)
-            }
-        }*/);
+        silenceDetector = new AudioWorkletNode(audioContext, 'silence-detector');
         pcmCaptureProcessor = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
         
         // Set up message handler for silence detection
         silenceDetector.port.onmessage = (event) => {
             const snapshot = event.data;
-            console.log('Silence detector message:', snapshot);
+            console.debug('Silence detector message:', snapshot);
             silenceDetector.port.postMessage('ok');
             if (snapshot) {
                 const result = calculateWhiteNoiseSimilarity(snapshot);
-                console.log('Result:', result);
+                console.debug('Result:', result);
                 // Format top frequencies for display
                 const frequenciesText = result.topFrequencies
                     .map(f => `${(f.frequency/1000).toFixed(1)}kHz (${f.magnitude.toFixed(2)})`)
                     .join(', ');
+                if (result.similarity < 0.997 && result.topFrequencies.some(v => v.magnitude > 0.0025 && v.frequency > 0)) {
+                    console.error(result);
+                }
                 
                 // When we receive non-silent input, update the status with white noise similarity and frequency info
                 statusDiv.textContent = `Status: Audio detected (White noise similarity: ${(result.similarity * 100).toFixed(1)}%, Top frequencies: ${frequenciesText})`;
@@ -260,6 +266,8 @@ startBtn.addEventListener('click', async () => {
             if (event.data.type === 'pcm-data') {
                 const pcmData = event.data.data;
                 console.log('Received PCM data:', pcmData.length, 'chunks');
+                const alldata = pcmData.reduce((acc, chunk) => acc.concat(Array.from(chunk)), []);
+                console.log(min(alldata), max(alldata), alldata);
                 
                 // Combine all PCM chunks into a single Int16Array
                 const totalLength = pcmData.reduce((acc, chunk) => acc + chunk.length, 0);
@@ -296,8 +304,8 @@ startBtn.addEventListener('click', async () => {
         
         // Connect the audio processing chain
         source.connect(analyser);
-        source.connect(silenceDetector);
         source.connect(pcmCaptureProcessor);
+        source.connect(silenceDetector);
         
         // Start PCM capture
         pcmCaptureProcessor.port.postMessage({ type: 'start' });
@@ -346,12 +354,3 @@ stopBtn.addEventListener('click', () => {
         // It will be cleared after we receive the PCM data in the message handler
     }
 });
-
-// Handle threshold changes
-/*document.getElementById('threshold').addEventListener('input', (e) => {
-    const value = e.target.value;
-    document.getElementById('thresholdValue').textContent = value;
-    if (silenceDetector) {
-        silenceDetector.parameters.get('threshold').value = parseFloat(value);
-    }
-}); */

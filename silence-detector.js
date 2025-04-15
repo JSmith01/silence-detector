@@ -36,14 +36,15 @@ class SilenceDetectorNode extends AudioWorkletProcessor {
 
         const threshold = parameters.threshold[0];
 
+        const input = inputs[0];
+        const channel = input[0];
+        
         let nonSilentInput;
-        ext: for (let channelN = 0; channelN < inputs[0].length; channelN++) {
-            for (let i = 0; i < inputs[0][channelN].length; i++) {
-                if (Math.abs(inputs[0][channelN][i]) > threshold) {
-                    nonSilentInput = inputs[0][channelN];
+        for (let i = 0; i < channel.length; i++) {
+            if (Math.abs(channel[i]) > threshold) {
+                nonSilentInput = channel;
 
-                    break ext;
-                }
+                break;
             }
         }
 
