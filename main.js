@@ -8,6 +8,54 @@ let pcmCaptureProcessor;
 let currentAudioBlob = null;
 let mediaStream;
 
+// WebAssembly module and functions
+let wasmModule = null;
+let initTwiddleFactors = null;
+let calculateFrequencyBins = null;
+
+// Load and initialize WebAssembly module
+async function initializeWasmModule() {
+    try {
+        const response = await fetch('fft.wasm');
+        const wasmBytes = await response.arrayBuffer();
+        
+        // Create required imports for WASI and environment
+        const importObject = {
+            env: {
+                memory: new WebAssembly.Memory({ initial: 10, maximum: 100 }),
+                wasm_simd128: () => {}, // stub for SIMD feature
+            },
+            wasi_snapshot_preview1: {
+                proc_exit: (code) => {
+                    if (code !== 0) {
+                        throw new Error(`WASM exit with code ${code}`);
+                    }
+                },
+                fd_write: () => 0,
+                fd_close: () => 0,
+                fd_seek: () => 0,
+                fd_read: () => 0
+            }
+        };
+        
+        const result = await WebAssembly.instantiate(wasmBytes, importObject);
+        wasmModule = result.instance;
+        
+        // Get function references
+        initTwiddleFactors = wasmModule.exports.init_twiddle_factors;
+        calculateFrequencyBins = wasmModule.exports.calculate_frequency_bins;
+        
+        // Initialize the twiddle factors
+        initTwiddleFactors();
+        console.log('WebAssembly FFT module initialized successfully');
+    } catch (error) {
+        console.error('Failed to initialize WebAssembly module:', error);
+    }
+}
+
+// Initialize WebAssembly module when the page loads
+initializeWasmModule().catch(console.error);
+
 function min(array) {
     let m = array[0];
     for (let i = 1; i < array.length; i++) {
@@ -157,49 +205,85 @@ function drawWaveform() {
 // Function to calculate how similar the audio data is to white noise
 function calculateWhiteNoiseSimilarity(audioData) {
     const sampleRate = 48000; // From WAV header
-    const fftData = new Float32Array(FFT_SIZE);
     
-    // Perform FFT using precalculated coefficients
-    for (let k = 0; k < FFT_SIZE; k++) {
-        let real = 0;
-        let imag = 0;
-        for (let n = 0; n < FFT_SIZE; n++) {
-            const coeffIndex = (k * FFT_SIZE + n) * 2;
-            const cosCoeff = fftCoefficients[coeffIndex];
-            const sinCoeff = fftCoefficients[coeffIndex + 1];
-            real += audioData[n] * cosCoeff;
-            imag -= audioData[n] * sinCoeff;
+    // If WebAssembly module is not loaded, fall back to JS implementation
+    if (!wasmModule) {
+        // Perform FFT using precalculated coefficients
+        const fftData = new Float32Array(FFT_SIZE);
+        for (let k = 0; k < FFT_SIZE; k++) {
+            let real = 0;
+            let imag = 0;
+            for (let n = 0; n < FFT_SIZE; n++) {
+                const coeffIndex = (k * FFT_SIZE + n) * 2;
+                const cosCoeff = fftCoefficients[coeffIndex];
+                const sinCoeff = fftCoefficients[coeffIndex + 1];
+                real += audioData[n] * cosCoeff;
+                imag -= audioData[n] * sinCoeff;
+            }
+            fftData[k] = Math.sqrt(real * real + imag * imag);
         }
-        fftData[k] = Math.sqrt(real * real + imag * imag);
+        
+        let sum = 0;
+        let sumSquares = 0;
+        const frequencies = [];
+        for (let i = 0; i < FFT_SIZE / 2; i++) {
+            const magnitude = fftData[i];
+            const frequency = i * (sampleRate / FFT_SIZE);
+            frequencies.push({ frequency, magnitude });
+            sum += magnitude;
+            sumSquares += magnitude * magnitude;
+        }
+        frequencies.sort((a, b) => b.magnitude - a.magnitude);
+        const topFrequencies = frequencies.slice(0, 5);
+        const mean = sum / (FFT_SIZE / 2);
+        const variance = (sumSquares / (FFT_SIZE / 2)) - (mean * mean);
+        const stdDev = Math.sqrt(variance);
+        const flatness = 1 / (1 + stdDev);
+        
+        return {
+            similarity: flatness,
+            topFrequencies: topFrequencies
+        };
     }
     
-    // Calculate the flatness of the spectrum (how close it is to white noise)
-    // White noise has a flat spectrum, so we calculate the standard deviation
-    // of the frequency magnitudes. Lower standard deviation means more similar to white noise.
+    // Prepare input and output buffers
+    const inputBuffer = new Float32Array(FFT_SIZE);
+    const outputBins = new Float32Array(FFT_SIZE / 2);
+    
+    // Copy audio data to input buffer
+    for (let i = 0; i < Math.min(audioData.length, FFT_SIZE); i++) {
+        inputBuffer[i] = audioData[i];
+    }
+    
+    // Get memory addresses for WebAssembly
+    const inputPtr = wasmModule.exports.__heap_base;
+    const outputPtr = inputPtr + FFT_SIZE * 4;
+    
+    // Copy input data to WebAssembly memory
+    new Float32Array(wasmModule.exports.memory.buffer, inputPtr, FFT_SIZE).set(inputBuffer);
+    
+    // Calculate frequency bins using WebAssembly
+    calculateFrequencyBins(inputPtr, outputPtr);
+    
+    // Read results back
+    const fftData = new Float32Array(wasmModule.exports.memory.buffer, outputPtr, FFT_SIZE / 2);
+    
     let sum = 0;
     let sumSquares = 0;
-    
-    // Create array of frequency-magnitude pairs
     const frequencies = [];
-    for (let i = 0; i < FFT_SIZE/2; i++) { // Only use first half (real frequencies)
+    for (let i = 0; i < FFT_SIZE / 2; i++) {
         const magnitude = fftData[i];
         const frequency = i * (sampleRate / FFT_SIZE);
         frequencies.push({ frequency, magnitude });
-        
         sum += magnitude;
         sumSquares += magnitude * magnitude;
     }
-    
-    // Sort frequencies by magnitude in descending order
     frequencies.sort((a, b) => b.magnitude - a.magnitude);
-    
-    // Get top 5 frequencies
     const topFrequencies = frequencies.slice(0, 5);
-    
-    const mean = sum / (FFT_SIZE/2);
-    const variance = (sumSquares / (FFT_SIZE/2)) - (mean * mean);
+    const mean = sum / (FFT_SIZE / 2);
+    const variance = (sumSquares / (FFT_SIZE / 2)) - (mean * mean);
     const stdDev = Math.sqrt(variance);
-    const flatness = 1 / (1 + stdDev); // Normalize to 0-1 range, where 1 is perfect white noise
+    const flatness = 1 / (1 + stdDev);
     
     return {
         similarity: flatness,
