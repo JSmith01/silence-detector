@@ -8,7 +8,7 @@ class SilenceDetectorNode extends AudioWorkletProcessor {
             {
                 name: 'threshold',
                 // the first two bits from ADC (16 bit) could be random noise even for muted audio
-                defaultValue: 3 / 32768,
+                defaultValue: 1 / 32768,
                 minValue: 0,
                 maxValue: 1,
             },

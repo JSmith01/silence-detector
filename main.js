@@ -8,33 +8,36 @@ let pcmCaptureProcessor;
 let currentAudioBlob = null;
 let mediaStream;
 
+const FFT_SIZE = 128;
+
 // WebAssembly module and functions
 let wasmModule = null;
+let wasmMemory = null;
+const cosTablePtr = 0;
+const sinTablePtr = FFT_SIZE * (FFT_SIZE / 2) * 4;
+const inputPtr = sinTablePtr * 2;
+let inputMemory = null;
+const outputPtr = inputPtr + FFT_SIZE * 4;
+let outputMemory = null;
 let initTwiddleFactors = null;
 let calculateFrequencyBins = null;
 
 // Load and initialize WebAssembly module
 async function initializeWasmModule() {
     try {
+        // Create memory to be imported into WASM
+        wasmMemory = new WebAssembly.Memory({
+            initial: 256,  // 16MB (256 pages * 64KB per page)
+            maximum: 256   // Set maximum to same as initial since we don't need growth
+        });
+
         const response = await fetch('fft.wasm');
         const wasmBytes = await response.arrayBuffer();
         
-        // Create required imports for WASI and environment
+        // Create import object with memory
         const importObject = {
             env: {
-                memory: new WebAssembly.Memory({ initial: 10, maximum: 100 }),
-                wasm_simd128: () => {}, // stub for SIMD feature
-            },
-            wasi_snapshot_preview1: {
-                proc_exit: (code) => {
-                    if (code !== 0) {
-                        throw new Error(`WASM exit with code ${code}`);
-                    }
-                },
-                fd_write: () => 0,
-                fd_close: () => 0,
-                fd_seek: () => 0,
-                fd_read: () => 0
+                memory: wasmMemory
             }
         };
         
@@ -46,8 +49,11 @@ async function initializeWasmModule() {
         calculateFrequencyBins = wasmModule.exports.calculate_frequency_bins;
         
         // Initialize the twiddle factors
-        initTwiddleFactors();
-        console.log('WebAssembly FFT module initialized successfully');
+        const tableSize = FFT_SIZE * (FFT_SIZE / 2);
+        initTwiddleFactors(cosTablePtr, sinTablePtr);
+        console.log('WebAssembly FFT module initialized successfully', new Float32Array(wasmMemory.buffer, cosTablePtr, tableSize), new Float32Array(wasmMemory.buffer, sinTablePtr, tableSize));
+        inputMemory = new Float32Array(wasmMemory.buffer, inputPtr, FFT_SIZE);
+        outputMemory = new Float32Array(wasmMemory.buffer, outputPtr, FFT_SIZE / 2);
     } catch (error) {
         console.error('Failed to initialize WebAssembly module:', error);
     }
@@ -94,7 +100,6 @@ waveform.appendChild(canvas);
 canvasCtx = canvas.getContext('2d');
 
 // Precalculate FFT coefficients for 128-point FFT
-const FFT_SIZE = 128;
 const fftCoefficients = new Float32Array(FFT_SIZE * FFT_SIZE * 2); // [cos, sin] pairs
 
 // Calculate coefficients once
@@ -207,7 +212,7 @@ function calculateWhiteNoiseSimilarity(audioData) {
     const sampleRate = 48000; // From WAV header
     
     // If WebAssembly module is not loaded, fall back to JS implementation
-    if (!wasmModule) {
+    if (!wasmModule || !wasmMemory) {
         // Perform FFT using precalculated coefficients
         const fftData = new Float32Array(FFT_SIZE);
         for (let k = 0; k < FFT_SIZE; k++) {
@@ -246,40 +251,36 @@ function calculateWhiteNoiseSimilarity(audioData) {
         };
     }
     
-    // Prepare input and output buffers
-    const inputBuffer = new Float32Array(FFT_SIZE);
-    const outputBins = new Float32Array(FFT_SIZE / 2);
     
-    // Copy audio data to input buffer
-    for (let i = 0; i < Math.min(audioData.length, FFT_SIZE); i++) {
-        inputBuffer[i] = audioData[i];
+    // Copy audio data to WASM memory
+    for (let i = 0; i < FFT_SIZE; i++) {
+        inputMemory[i] = audioData[i];
     }
     
-    // Get memory addresses for WebAssembly
-    const inputPtr = wasmModule.exports.__heap_base;
-    const outputPtr = inputPtr + FFT_SIZE * 4;
+    // Call FFT implementation
+    calculateFrequencyBins(cosTablePtr, sinTablePtr, inputPtr, outputPtr);
     
-    // Copy input data to WebAssembly memory
-    new Float32Array(wasmModule.exports.memory.buffer, inputPtr, FFT_SIZE).set(inputBuffer);
-    
-    // Calculate frequency bins using WebAssembly
-    calculateFrequencyBins(inputPtr, outputPtr);
-    
-    // Read results back
-    const fftData = new Float32Array(wasmModule.exports.memory.buffer, outputPtr, FFT_SIZE / 2);
-    
+    // Calculate the flatness of the spectrum
     let sum = 0;
     let sumSquares = 0;
+    
+    // Create array of frequency-magnitude pairs
     const frequencies = [];
     for (let i = 0; i < FFT_SIZE / 2; i++) {
-        const magnitude = fftData[i];
+        const magnitude = outputMemory[i];
         const frequency = i * (sampleRate / FFT_SIZE);
         frequencies.push({ frequency, magnitude });
+        
         sum += magnitude;
         sumSquares += magnitude * magnitude;
     }
+    
+    // Sort frequencies by magnitude in descending order
     frequencies.sort((a, b) => b.magnitude - a.magnitude);
+    
+    // Get top 5 frequencies
     const topFrequencies = frequencies.slice(0, 5);
+    
     const mean = sum / (FFT_SIZE / 2);
     const variance = (sumSquares / (FFT_SIZE / 2)) - (mean * mean);
     const stdDev = Math.sqrt(variance);

@@ -1,60 +1,65 @@
-#include <wasm_simd128.h>
 #include <math.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <emscripten.h>
 
-#define FFT_SIZE 512
-#define PI 3.14159265358979323846
+#define FFT_SIZE 128
 
-// Precalculated twiddle factors
-static float cos_table[FFT_SIZE] __attribute__((aligned(16)));
-static float sin_table[FFT_SIZE] __attribute__((aligned(16)));
+// emcc -O3 -msimd128 fft.c -o fft.wasm --no-entry -sIMPORTED_MEMORY -sERROR_ON_UNDEFINED_SYMBOLS=0
 
-// Initialize the twiddle factor tables
-void init_twiddle_factors() {
-    for (int32_t k = 0; k < FFT_SIZE; k++) {
-        float angle = 2.0f * PI * k / FFT_SIZE;
-        cos_table[k] = cosf(angle);
-        sin_table[k] = sinf(angle);
+// Make these functions visible to JavaScript
+EMSCRIPTEN_KEEPALIVE
+void init_twiddle_factors(uintptr_t cos_table, uintptr_t sin_table) {
+    for (int32_t k = 0; k < FFT_SIZE / 2; k++) {
+        for (int32_t n = 0; n < FFT_SIZE; n++) {
+            float angle = (2.0f * M_PI * k * n) / FFT_SIZE;
+            int32_t index = k * FFT_SIZE + n;
+            ((float *)cos_table)[index] = cosf(angle);
+            ((float *)sin_table)[index] = sinf(angle);
+        }
     }
 }
 
-void calculate_frequency_bins(float* input_buffer, float* output_bins) {
-    // Process 4 frequency bins at a time using SIMD
-    for (int32_t k = 0; k < FFT_SIZE/2; k += 4) {
-        // Initialize accumulators for 4 bins
-        v128_t sum_real = wasm_f32x4_splat(0.0f);
-        v128_t sum_imag = wasm_f32x4_splat(0.0f);
-        
-        // Process all time domain samples
-        for (int32_t n = 0; n < FFT_SIZE; n++) {
-            // Load input value and broadcast to all SIMD lanes
-            v128_t input = wasm_f32x4_splat(input_buffer[n]);
-            
-            // Calculate indices for 4 consecutive bins
-            int32_t idx0 = ((k + 0) * n) & (FFT_SIZE - 1);
-            int32_t idx1 = ((k + 1) * n) & (FFT_SIZE - 1);
-            int32_t idx2 = ((k + 2) * n) & (FFT_SIZE - 1);
-            int32_t idx3 = ((k + 3) * n) & (FFT_SIZE - 1);
-            
-            // Load cos/sin values for 4 bins
-            v128_t cos_vals = wasm_v128_load(&cos_table[idx0]);
-            v128_t sin_vals = wasm_v128_load(&sin_table[idx0]);
-            
-            // Multiply and accumulate
-            v128_t prod_real = wasm_f32x4_mul(input, cos_vals);
-            v128_t prod_imag = wasm_f32x4_mul(input, sin_vals);
-            
-            sum_real = wasm_f32x4_add(sum_real, prod_real);
-            sum_imag = wasm_f32x4_sub(sum_imag, prod_imag);
+EMSCRIPTEN_KEEPALIVE
+void calculate_frequency_bins(uintptr_t cos_table, uintptr_t sin_table, uintptr_t input_ptr, uintptr_t output_ptr) {
+    float* input_buffer = (float*)input_ptr;
+    float* output_bins = (float*)output_ptr;
+    
+    for (int32_t k = 0; k < FFT_SIZE / 2; k++) {
+        float real = 0;
+        float imag = 0;
+        int32_t n = 0;
+        int32_t coeffIndex = k * FFT_SIZE;
+        while (n < FFT_SIZE) {
+            // 0
+            real += input_buffer[n] * ((float *)cos_table)[coeffIndex];
+            imag -= input_buffer[n] * ((float *)sin_table)[coeffIndex];
+
+            n++;
+            coeffIndex++;
+
+            // 1
+            real += input_buffer[n] * ((float *)cos_table)[coeffIndex];
+            imag -= input_buffer[n] * ((float *)sin_table)[coeffIndex];
+
+            n++;
+            coeffIndex++;
+
+            // 2
+            real += input_buffer[n] * ((float *)cos_table)[coeffIndex];
+            imag -= input_buffer[n] * ((float *)sin_table)[coeffIndex];
+
+            n++;
+            coeffIndex++;
+
+            // 3
+            real += input_buffer[n] * ((float *)cos_table)[coeffIndex];
+            imag -= input_buffer[n] * ((float *)sin_table)[coeffIndex];
+
+            n++;
+            coeffIndex++;
         }
-        
-        // Calculate magnitudes
-        v128_t real_squared = wasm_f32x4_mul(sum_real, sum_real);
-        v128_t imag_squared = wasm_f32x4_mul(sum_imag, sum_imag);
-        v128_t magnitude = wasm_f32x4_sqrt(wasm_f32x4_add(real_squared, imag_squared));
-        
-        // Store results
-        wasm_v128_store(&output_bins[k], magnitude);
+
+        output_bins[k] = sqrtf(real * real + imag * imag);
     }
 }
